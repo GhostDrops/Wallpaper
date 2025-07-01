@@ -1,0 +1,78 @@
+<#
+.SYNOPSIS
+    Wechselnde Windows-Wallpaper direkt aus Web-URLs via PowerShell.
+.DESCRIPTION
+    Interaktive Abfrage von Bild-URLs und Wechsel-Intervall; lädt die Bilder herunter und setzt sie als Hintergrund.
+#>
+
+# 1) Abfrage der Anzahl der Links
+[int]$count = 0
+try {
+    $count = [int](Read-Host 'Anzahl der Wallpaper-Links:')
+    if ($count -le 0) { throw }
+} catch {
+    Write-Error 'Ungültige Zahl, Skript beendet.'; exit 1
+}
+
+# 2) Einlesen der URLs
+$Urls = @()
+for ($i = 1; $i -le $count; $i++) {
+    $u = Read-Host "URL #$i (direkter Bild-Link, endet auf .jpg/.png/.bmp)"
+    if (![string]::IsNullOrWhiteSpace($u)) { $Urls += $u.Trim() }
+}
+if ($Urls.Count -eq 0) { Write-Error 'Keine URLs eingegeben, Skript beendet.'; exit 1 }
+
+# 3) Abfrage des Intervalls
+[int]$interval = 0
+try {
+    $interval = [int](Read-Host 'Intervall in Sekunden (z.B. 3600 für 1 Stunde):')
+    if ($interval -le 0) { throw }
+} catch {
+    Write-Warning 'Ungültiges Intervall. Standard 3600 s wird verwendet.'
+    $interval = 3600
+}
+
+Write-Host "`nStarte Wallpaper-Sync... (STRG+C zum Stoppen)`n"
+
+# 4) Win32-API für Wallpaper setzen
+$code = @"
+using System.Runtime.InteropServices;
+public class WinApi {
+    [DllImport("user32.dll", SetLastError=true)]
+    public static extern bool SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
+}
+"@
+Add-Type -TypeDefinition $code
+
+# 5) Funktion zum Anwenden des Wallpapers
+function Set-Wallpaper($file) {
+    # Füllen, kein Kacheln
+    Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name WallpaperStyle -Value '10'
+    Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name TileWallpaper -Value '0'
+    [WinApi]::SystemParametersInfo(20, 0, $file, 0x01 -bor 0x02) | Out-Null
+}
+
+# 6) Funktion zum Erzeugen des Temp-Dateipfads mit korrekter Endung
+function Get-TempFile($url) {
+    $ext = [IO.Path]::GetExtension(($url.Split('?')[0]))
+    if ([string]::IsNullOrWhiteSpace($ext)) { $ext = '.jpg' }
+    return [IO.Path]::Combine($env:TEMP, "wallpaper_sync$ext")
+}
+
+# 7) Endlosschleife zum Rotieren
+$idx = 0
+while ($true) {
+    $url = $Urls[$idx % $Urls.Count]
+    $ts  = (Get-Date).ToString('HH:mm:ss')
+    Write-Host "[$ts] Lade: $url"
+    try {
+        $tmp = Get-TempFile $url
+        Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile $tmp -ErrorAction Stop
+        Write-Host "[$ts] Setze Wallpaper"
+        Set-Wallpaper $tmp
+    } catch {
+        Write-Warning ("[{0}] Fehler bei {1}: {2}" -f $ts, $url, $_)
+    }
+    $idx++
+    Start-Sleep -Seconds $interval
+}
